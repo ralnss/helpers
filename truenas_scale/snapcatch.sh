@@ -56,47 +56,42 @@ run_task_and_wait() {
     if [ "$AGE" -ge "$MAX_AGE" ]; then
         logger "snapcatch: $LABEL snapshot missing → running task $TASK_ID"
         
-        # Start task and capture Job ID
-        local JOB_ID
-        JOB_ID=$(midclt call pool.snapshottask.run "$TASK_ID")
+        # Start task
+        local RESULT
+        RESULT=$(midclt call pool.snapshottask.run "$TASK_ID")
         
-        if [ -z "$JOB_ID" ] || [ "$JOB_ID" == "null" ]; then
-            logger "snapcatch: ERROR - Failed to start task $TASK_ID"
+        # Handle the different return types
+        if [ "$RESULT" == "null" ] || [ -z "$RESULT" ]; then
+            logger "snapcatch: $LABEL task completed immediately (null return)"
             return
         fi
 
-        logger "snapcatch: waiting for job $JOB_ID..."
-        
-        # Polling loop with a timeout safety (10 minutes)
-        local COUNTER=0
-        while [ $COUNTER -lt 300 ]; do
-            # Query the specific Job ID
-            local JOB_DATA=$(midclt call core.get_jobs "[[\"id\", \"=\", $JOB_ID]]" | jq -r '.[0]')
-            local STATE=$(echo "$JOB_DATA" | jq -r '.state')
-
-            if [[ "$STATE" == "SUCCESS" ]]; then
-                logger "snapcatch: $LABEL task finished successfully"
-                return
-            elif [[ "$STATE" == "FAILED" ]] || [[ "$STATE" == "ABORTED" ]]; then
-                logger "snapcatch: $LABEL task FAILED or was ABORTED"
-                return
-            fi
+        # If it's a number, it's a Job ID we need to wait for
+        if [[ "$RESULT" =~ ^[0-9]+$ ]]; then
+            local JOB_ID=$RESULT
+            logger "snapcatch: waiting for job $JOB_ID..."
             
-            # If state is empty or null, the job might have cleared from the buffer
-            if [ -z "$STATE" ] || [ "$STATE" == "null" ]; then
-                logger "snapcatch: Job $JOB_ID no longer found, assuming finished"
-                return
-            fi
+            local COUNTER=0
+            while [ $COUNTER -lt 300 ]; do
+                local STATE=$(midclt call core.get_jobs "[[\"id\", \"=\", $JOB_ID]]" | jq -r '.[0].state')
 
-            sleep 2
-            ((COUNTER++))
-        done
-        logger "snapcatch: TIMEOUT waiting for job $JOB_ID"
+                if [[ "$STATE" == "SUCCESS" ]]; then
+                    logger "snapcatch: $LABEL task finished successfully"
+                    return
+                elif [[ "$STATE" == "FAILED" ]] || [[ "$STATE" == "ABORTED" ]]; then
+                    logger "snapcatch: $LABEL task FAILED or was ABORTED"
+                    return
+                fi
+                sleep 2
+                ((COUNTER++))
+            done
+        else
+            logger "snapcatch: ERROR - Unexpected response from task $TASK_ID: $RESULT"
+        fi
     else
         logger "snapcatch: $LABEL snapshot is fresh"
     fi
 }
-
 
 ####################################
 # EXECUTION
